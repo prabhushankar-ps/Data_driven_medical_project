@@ -1,0 +1,329 @@
+---
+title: "Data_driven"
+author: "Prabhu Shankar"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+```{r,include=FALSE}
+# Load necessary libraries
+library("ggplot2")
+library("dplyr")
+library("caret")
+library("rpart")
+library("randomForest")
+library('purrr')
+library("Amelia")  # For missing data visualization
+library("ranger")
+library(rpart.plot)
+
+
+DO_NOT_TOUCH <- read.csv('/Users/prabhushankar/Downloads/OUData.csv')
+optical_data <- DO_NOT_TOUCH
+summary(optical_data)
+```
+
+
+
+```{r}
+optical_data$BloodPressureUpper <- as.numeric(optical_data$BloodPressureUpper)
+optical_data$BloodPressureDiff <- as.numeric(optical_data$BloodPressureDiff)
+optical_data$Pulse <- as.numeric(optical_data$Pulse)
+optical_data$PulseOximetry <- as.numeric(optical_data$PulseOximetry)
+optical_data$Respirations <- as.numeric(optical_data$Respirations)
+optical_data$Temperature <- as.numeric(optical_data$Temperature)
+```
+
+```{r}
+optical_data$Flipped <- ifelse(optical_data$Flipped == 1, "Yes", "No")
+
+optical_data$Gender <- as.factor(optical_data$Gender)
+optical_data$PrimaryInsuranceCategory <- as.factor(optical_data$PrimaryInsuranceCategory)
+optical_data$DRG01 <- as.factor(optical_data$DRG01)
+optical_data$Flipped <- as.factor(optical_data$Flipped)
+
+optical_data <- subset(optical_data, select = -c(InitPatientClassAndFirstPostOUClass, ObservationRecordKey))
+str(optical_data)
+```
+
+```{r}
+optical_data$PulseOximetry[is.na(optical_data$PulseOximetry)] <- mean(optical_data$PulseOximetry, na.rm = TRUE)
+optical_data$BloodPressureUpper[is.na(optical_data$BloodPressureUpper)] <- mean(optical_data$BloodPressureUpper, na.rm = TRUE)
+optical_data$Pulse[is.na(optical_data$Pulse)] <- mean(optical_data$Pulse, na.rm = TRUE)
+optical_data$Respirations[is.na(optical_data$Respirations)] <- mean(optical_data$Respirations, na.rm = TRUE)
+optical_data$Temperature[is.na(optical_data$Temperature)] <- mean(optical_data$Temperature, na.rm = TRUE)
+optical_data$BloodPressureDiff[is.na(optical_data$BloodPressureDiff)] <- mean(optical_data$BloodPressureUpper-optical_data$BloodPressureLower, na.rm = TRUE)
+
+summary(optical_data)
+```
+
+
+
+```{r}
+
+
+ggplot(optical_data, aes(x = PrimaryInsuranceCategory)) +
+  geom_bar(fill = "#4A6FA5") + 
+  labs(title = "Distribution of Primary Insurance Category") +
+  theme_minimal()
+
+
+
+
+ggplot(optical_data, aes(x = Flipped)) +
+  geom_bar(fill = "#4A6FA5") +
+  labs(title = "Distribution of Flipped")
+
+
+ggplot(optical_data, aes(x = Gender)) +
+  geom_bar(fill = "#4A6FA5") +
+  labs(title = "Distribution of Gender")
+
+
+
+numeric_vars <- optical_data[, sapply(optical_data, is.numeric)]
+
+
+library(rlang)
+
+for (variable in names(numeric_vars)) {  
+  print(  
+    ggplot(optical_data, aes(x = !!sym(variable))) +  
+      geom_histogram(binwidth = 1, fill = "#4A6FA5", alpha = 0.7, na.rm = TRUE) +  
+      theme_minimal() +  
+      labs(title = paste("Distribution of", variable), x = variable, y = "Frequency")  
+  )  
+}
+
+
+```
+
+
+
+
+```{r}
+identify_outliers <- function(data_column) {  
+  lower_limit <- quantile(data_column, 0.25, na.rm = TRUE) - 1.5 * IQR(data_column, na.rm = TRUE)  
+  upper_limit <- quantile(data_column, 0.75, na.rm = TRUE) + 1.5 * IQR(data_column, na.rm = TRUE)  
+  data_column < lower_limit | data_column > upper_limit  }  
+
+outlier_flags <- numeric_vars %>%  map(identify_outliers) %>%  bind_cols() %>%  rowSums() %>%  as.logical()  
+
+outlier_records <- optical_data[outlier_flags, ]  
+
+cleaned_optical_data <- optical_data[!outlier_flags, ]
+
+```
+
+
+```{r}
+
+num_var_correlation <- cor(numeric_vars, use = "complete.obs")  
+
+
+library(corrplot)  
+corrplot(num_var_correlation, 
+         method = "color",       
+         type = "lower",         
+         tl.col = "black",       
+         tl.srt = 45,           
+         addCoef.col = "black",  
+         number.cex = 0.8,        
+)
+
+
+for (feature in names(numeric_vars)) {  
+  print(  
+    ggplot(cleaned_optical_data, aes_string(x = "Flipped", y = feature, fill = "Flipped")) +  
+      geom_boxplot() +  
+      theme_minimal() +  
+      scale_fill_manual(values = c("0" = "#FF5733", "1" = "#FF0000")) + 
+      labs(title = paste("Boxplot of", feature, "by Flipped"), x = "Flipped", y = feature)  
+  )  
+}
+
+
+ggplot(cleaned_optical_data, aes(x = DRG01, fill = Flipped)) + 
+    geom_bar(position = "dodge") + 
+    labs(title = "DRG") + 
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+
+
+
+ggplot(cleaned_optical_data, aes(x = Gender, fill = Flipped)) +  
+  geom_bar(position = "dodge") +  
+  labs(title = "Gender") +  
+  theme_minimal()  
+
+ggplot(cleaned_optical_data, aes(x = PrimaryInsuranceCategory, fill = Flipped)) +  
+  geom_bar(position = "dodge") +  
+  labs(title = "Primary Insurance Category") +  
+  theme_minimal()  
+
+
+ggplot(cleaned_optical_data, aes(x = BloodPressureLower, y = Pulse)) +  
+  geom_point(alpha = 0.5, color = "red") +  
+  geom_smooth(method = "lm", color = "orange", se = TRUE) +  
+  labs(title = "Blood Pressure Lower vs Pulse", x = "Blood Pressure Lower", y = "Pulse")  
+
+
+ggplot(cleaned_optical_data, aes(x = Age, y = OU_LOS_hrs)) +  
+  geom_point(alpha = 0.5, color = "blue") +  
+  geom_smooth(method = "lm", color = "orange", se = TRUE) +  
+  labs(title = "Age vs Length of Stay", x = "Age", y = "Length of Stay (Hours)")  
+
+ggplot(cleaned_optical_data, aes(x = Age, y = PulseOximetry)) +  
+  geom_point(color = "green", alpha = 0.6) +  
+  geom_smooth(method = "lm", color = "orange", se = TRUE) +  
+  labs(title = "Age vs Oxygen Level", x = "Age", y = "Oxygen Level (PulseOximetry)")  
+
+
+
+
+
+
+group_by_calc <- cleaned_optical_data %>%
+  group_by(DRG01) %>%
+  summarise(Count = n()) %>%
+  arrange(desc(Count))
+
+
+ggplot(group_by_calc, aes(x = reorder(DRG01, -Count), y = Count, fill = DRG01)) +
+  geom_bar(stat = "identity") +  
+  theme_minimal() +
+  labs(title = "Count of Each Disease", x = "Disease", y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  guides(fill = "none")  
+
+
+
+
+```
+
+
+
+```{r}
+set.seed(123)
+train.index = sample(c(1:dim(cleaned_optical_data)[1]), dim(cleaned_optical_data)[1] * 0.8)
+train_data  = cleaned_optical_data[train.index, ]
+test_data = cleaned_optical_data[-train.index, ]
+
+
+glm_model <- glm(Flipped ~ .-OU_LOS_hrs - PrimaryInsuranceCategory - BloodPressureUpper, data = train_data, family = binomial)
+     
+summary(glm_model)
+
+
+log_pred <- predict(glm_model, test_data, type = "response")
+log_pred_class <- ifelse(log_pred > 0.5, "Yes", "No")
+
+
+log_conf_matrix <- confusionMatrix(factor(log_pred_class), test_data$Flipped)
+print(log_conf_matrix)
+
+
+log_model2 <- glm(Flipped ~ Gender + DRG01 + Temperature,data = train_data, family = binomial)
+
+summary(log_model2)           
+
+
+log_pred2 <- predict(log_model2, test_data, type = "response")
+log_pred_class2 <- ifelse(log_pred2 > 0.5, "Yes", "No")
+
+
+log_conf_matrix2 <- confusionMatrix(factor(log_pred_class2), test_data$Flipped)
+print(log_conf_matrix2)
+```
+
+```{r}
+set.seed(123)
+rand_forr_md <- randomForest(Flipped ~ Gender+ PrimaryInsuranceCategory + DRG01 , 
+                         data = train_data, ntree = 100)
+
+print(rand_forr_md)
+
+
+rand_pred <- predict(rand_forr_md, test_data)
+confusionMatrix(rand_pred, test_data$Flipped)
+```
+
+```{r}
+tree_md1 <- rpart(Flipped ~ .-OU_LOS_hrs - PrimaryInsuranceCategory - BloodPressureUpper, data = train_data, method = "class")
+
+
+rpart.plot(tree_md1, 
+           main = "Decision Tree",
+           type = 3,      
+           extra = 100,
+           fallen.leaves = TRUE, 
+           digits = 2, cex=0.7)
+
+
+tree_predictions <- predict(tree_md1, test_data, type = "class")
+confusionMatrix(tree_predictions, test_data$Flipped)
+```
+
+
+
+
+
+
+```{r}
+df <- data.frame(
+  Model = c('Logistic Regression', 'Logistic Regression2', 'Decision Tree', 'Random Forest'),
+  Accuracy = c(0.648, 0.6369, 0.6145, 0.6536),
+  Sensitivity = c(0.7642, 0.7453, 0.7075, 0.7453),
+  Specificity = c(0.4795, 0.4795, 0.4795, 0.5205)
+)
+
+# Print the table
+print(df)
+```
+
+
+
+
+
+
+```{r}
+f_model <- glm(Flipped ~ .- OU_LOS_hrs - PrimaryInsuranceCategory - BloodPressureUpper, data = cleaned_optical_data, family = binomial)
+f_pred <- predict(f_model, cleaned_optical_data, type = "response")
+f_pred_class <- ifelse(f_pred > 0.4, "Yes", "No")
+f_conf_mat <- confusionMatrix(factor(f_pred_class), cleaned_optical_data$Flipped)
+f_conf_mat
+
+log_pred_11 <- predict(f_model, test_data, type = "response")
+log_pred_class_111 <- ifelse(log_pred_11 > 0.5, "Yes", "No")
+
+
+log_conf_matrix_11 <- confusionMatrix(factor(log_pred_class_111), test_data$Flipped)
+print(log_conf_matrix_11)
+
+
+```
+
+
+```{r}
+saveRDS(f_model, file = "model.rds")
+coeeff <- coef(f_model)
+print(coeeff)
+AIC(f_model)
+```
+```{r}
+data <- readRDS("/Users/prabhushankar/Desktop/projects/Data_driven/model.rds")
+
+
+head(data, 1) 
+```
+
+```{r}
+
+
+#library('write_xlsx')
+#predicted_values <- data.frame(data$fitted.values)
+#write_xlsx(predicted_values, 'predicted_prob.xlsx')
+
+```
+
